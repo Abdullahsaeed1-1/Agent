@@ -1,8 +1,15 @@
+require("dotenv").config();
 const express = require("express");
+const OpenAI = require("openai");
 
 const app = express();
-const PORT = 3000;
-let chunkCounter = 0;
+const PORT = process.env.PORT || 3000;
+
+// Conversation memory: stores the last MEMORY_SIZE user+assistant message pairs per session.
+// Each "turn" counts as two messages (one user, one assistant), so total stored messages
+// equals MEMORY_SIZE * 2.
+const MEMORY_SIZE = parseInt(process.env.MEMORY_SIZE || "10", 10);
+const conversationMemory = new Map();
 
 app.use(express.json());
 
@@ -13,66 +20,73 @@ app.get("/", (req, res) => {
 
 // GitHub Copilot Extension agent endpoint
 // Copilot sends a POST request with a JSON body containing a `messages` array
-app.post("/", (req, res) => {
+app.post("/", async (req, res) => {
   try {
-    const messages = req.body && req.body.messages;
-
-    // Extract the last user message as the prompt
-    let prompt = "";
-    if (Array.isArray(messages) && messages.length > 0) {
-      const lastUserMsg = [...messages]
-        .reverse()
-        .find((m) => m.role === "user");
-      if (lastUserMsg) {
-        prompt =
-          typeof lastUserMsg.content === "string"
-            ? lastUserMsg.content
-            : JSON.stringify(lastUserMsg.content);
-      }
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      res.status(500).json({ error: "OPENAI_API_KEY is not configured." });
+      return;
     }
 
-    const responseText = prompt
-      ? `You said: "${prompt}". I am your GitHub Copilot Agent and I received your message!`
-      : "Hello! I am your GitHub Copilot Agent. Send me a message to get started.";
+    const openai = new OpenAI({ apiKey });
 
-    // Respond using Server-Sent Events (SSE) in the OpenAI-compatible streaming format
-    // that GitHub Copilot Extensions expect
+    const incomingMessages = (req.body && req.body.messages) || [];
+
+    // Use x-session-id for session tracking (non-sensitive, purpose-built header)
+    const sessionId = req.headers["x-session-id"] || "default";
+
+    // Retrieve stored memory (previous user+assistant turns) for this session
+    const memory = conversationMemory.get(sessionId) || [];
+
+    // Build message list: stored history + incoming messages from this request
+    const contextMessages = [...memory, ...incomingMessages];
+
+    // Build the full message list for OpenAI, prepending a system prompt
+    const systemPrompt = {
+      role: "system",
+      content:
+        process.env.SYSTEM_PROMPT ||
+        "You are a helpful AI assistant integrated into GitHub Copilot. Answer clearly and concisely.",
+    };
+    const openaiMessages = [systemPrompt, ...contextMessages];
+
+    // Set SSE headers before streaming
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    const created = Math.floor(Date.now() / 1000);
-
-    // Stream the response token by token
-    const tokens = responseText.split(" ");
-    tokens.forEach((token, index) => {
-      const chunk = {
-        id: `chatcmpl-agent-${++chunkCounter}`,
-        object: "chat.completion.chunk",
-        created,
-        model: "copilot-agent",
-        choices: [
-          {
-            index: 0,
-            delta: { content: index === 0 ? token : ` ${token}` },
-            finish_reason: null,
-          },
-        ],
-      };
-      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    const stream = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      messages: openaiMessages,
+      stream: true,
     });
 
-    // Send the final [DONE] event
-    const doneChunk = {
-      id: `chatcmpl-agent-${++chunkCounter}`,
-      object: "chat.completion.chunk",
-      created,
-      model: "copilot-agent",
-      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-    };
-    res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
+    let assistantReply = "";
+
+    for await (const chunk of stream) {
+      // Forward each SSE chunk directly to the client
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+
+      // Accumulate the assistant's reply for memory storage
+      const delta = chunk.choices?.[0]?.delta?.content;
+      if (delta) {
+        assistantReply += delta;
+      }
+    }
+
     res.write("data: [DONE]\n\n");
     res.end();
+
+    // Only persist to memory after a successful full stream so that incomplete
+    // exchanges do not cause context drift on the next turn.
+    if (assistantReply) {
+      const updatedMemory = [
+        ...memory,
+        ...incomingMessages,
+        { role: "assistant", content: assistantReply },
+      ].slice(-(MEMORY_SIZE * 2));
+      conversationMemory.set(sessionId, updatedMemory);
+    }
   } catch (err) {
     console.error("Error handling Copilot request:", err);
     if (!res.headersSent) {
