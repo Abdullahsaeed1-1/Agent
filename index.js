@@ -1,7 +1,8 @@
+require("dotenv").config();
 const express = require("express");
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 let chunkCounter = 0;
 
 app.use(express.json());
@@ -32,8 +33,8 @@ app.post("/", (req, res) => {
     }
 
     const responseText = prompt
-      ? `You said: "${prompt}". I am your GitHub Copilot Agent and I received your message!`
-      : "Hello! I am your GitHub Copilot Agent. Send me a message to get started.";
+      ? `You said: "${prompt}". I am Abdullah's GitHub Copilot Agent and I received your message!`
+      : "Hello! I am Abdullah's GitHub Copilot Agent. Send me a message to get started.";
 
     // Respond using Server-Sent Events (SSE) in the OpenAI-compatible streaming format
     // that GitHub Copilot Extensions expect

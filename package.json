@@ -1,13 +1,18 @@
 {
   "name": "agent-project",
   "version": "1.0.0",
-  "description": "",
+  "description": "A custom GitHub Copilot Extension agent built with Node.js and Express",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "github-copilot",
+    "copilot-extension",
+    "agent"
+  ],
+  "author": "Abdullahsaeed1-1",
   "license": "ISC",
   "dependencies": {
     "dotenv": "^17.3.1",
